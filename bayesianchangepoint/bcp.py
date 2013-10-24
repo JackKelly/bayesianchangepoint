@@ -32,8 +32,7 @@ def constant_hazard(r, _lambda):
       * _lambda (float)
 
     Returns:
-      * p (square np.ndarray shape (r.shape[0], r.shape[0]): 
-        probability of a changepoint
+      * p (np.ndarray with shape = r.shape): probability of a changepoint
     """
     if isinstance(r, np.ndarray):
         shape = r.shape
@@ -46,7 +45,7 @@ def constant_hazard(r, _lambda):
 
 def studentpdf(x, mu, var, nu):
     """
-    Returns the pdf(x).
+    Returns the pdf(x) for Student T distribution.
 
     scipy.stats.distributions.t.pdf(x=x-mu, df=nu) comes close
     to replicating studentpdf but Kevin Murphy's studentpdf
@@ -72,7 +71,7 @@ def inference(x, hazard_func, mu0=0, kappa0=1, alpha0=1, beta0=1):
         This is a handle to a function that takes one argument, the number of 
         time increments since the last changepoint, and returns a value in the
         interval [0,1] that is the probability of a changepoint.  
-        e.g. hazard_func=lambda r: constant_hazard(r, 200)
+        e.g. hazard_func=lambda beliefs: constant_hazard(beliefs, 200)
 
       * mu0, kappa0, alpha0, beta0 (float): specify normal-inverse-gamma prior.
         This data is Gaussian with unknown mean and variance.  We are going to
@@ -84,18 +83,24 @@ def inference(x, hazard_func, mu0=0, kappa0=1, alpha0=1, beta0=1):
           - Chris Bishop's "Pattern Recognition and Machine Learning" Chapter 2
           - Also, Kevin Murphy's lecture notes.
     """
-    # Now we have some data in X and it's time to perform inference.
+
     # First, setup the matrix that will hold our beliefs about the current
     # run lengths.  We'll initialize it all to zero at first.  Obviously
     # we're assuming here that we know how long we're going to do the
     # inference.  You can imagine other data structures that don't make that
     # assumption (e.g. linked lists).  We're doing this because it's easy.
-    r = np.zeros([x.size+1, x.size])
+    beliefs = np.zeros([x.size+1, x.size+1])
 
     # At time t=0, we actually have complete knowledge about the run
     # length.  It is definitely zero.  See the paper for other possible
-    # boundary conditions.
-    r[0,0] = 1.0
+    # boundary conditions.  'beliefs' is called 'R' in gaussdemo.m.
+    beliefs[0,0] = 1.0
+
+    # Convert floats to arrays
+    mu0    = np.array([mu0])
+    kappa0 = np.array([kappa0])
+    alpha0 = np.array([alpha0])
+    beta0  = np.array([beta0])
 
     # Track the current set of parameters.  These start out at the prior and
     # accumulate data as we proceed.
@@ -117,35 +122,38 @@ def inference(x, hazard_func, mu0=0, kappa0=1, alpha0=1, beta0=1):
                                2 * alphaT)
 
         # Evaluate the hazard function for this interval.
-        h = hazard_func(row_to_column_vector(np.arange(t)))
+        haz = hazard_func(np.arange(t+1))
 
         # Evaluate the growth probabilities - shift the probabilities down and to
         # the right, scaled by the hazard function and the predictive
         # probabilities.
-        r[1:t+1,t+1] = r[0:t,t] * predprobs * (1-h)
+        beliefs[1:t+2,t+1] = beliefs[0:t+1,t] * predprobs * (1-haz)
 
         # Evaluate the probability that there *was* a changepoint and we're
-        # accumulating the mass back down at r = 0.
-        r[0,t+1] = (r[0:t,t] * predprobs * h).sum()
+        # accumulating the mass back down at beliefs = 0.
+        beliefs[0,t+1] = (beliefs[0:t+1,t] * predprobs * haz).sum()
 
         # Renormalize the run length probabilities for improved numerical
         # stability.
-        r[:,t+1] = r[:,t+1] / r[:,t+1].sum()
+        beliefs[:,t+1] = beliefs[:,t+1] / beliefs[:,t+1].sum()
 
         # Update the parameter sets for each possible run length.
         # TODO: continue porting from here...
-        muT0    = [ mu0    ; (kappaT.*muT + X(t)) ./ (kappaT+1) ]
-        kappaT0 = [ kappa0 ; kappaT + 1 ]
-        alphaT0 = [ alpha0 ; alphaT + 0.5 ]
-        betaT0  = [ beta0  ; kappaT + (kappaT .*(X(t)-muT).^2)./(2*(kappaT+1)) ]
+
+        muT0    = np.concatenate([mu0   , (kappaT*muT + x[t]) / (kappaT+1) ])
+        kappaT0 = np.concatenate([kappa0, kappaT + 1 ])
+        alphaT0 = np.concatenate([alpha0, alphaT + 0.5 ])
+        betaT0  = np.concatenate([beta0 , kappaT + 
+                                          (kappaT*(x[t]-muT)**2)/(2*(kappaT+1))])
         muT     = muT0
         kappaT  = kappaT0
         alphaT  = alphaT0
         betaT   = betaT0
 
         # Store the maximum, to plot later.
-        maxes(t) = find(R(:,t)==max(R(:,t)))
+        maxes[t] = np.where(beliefs[:,t]==beliefs[:,t].max())[0]
 
+    return beliefs, maxes
 
 def generate_test_data(n, hazard_func, mu0=0, kappa0=1, alpha0=1, beta0=1):
     """
@@ -194,24 +202,51 @@ def generate_test_data(n, hazard_func, mu0=0, kappa0=1, alpha0=1, beta0=1):
 
     return x, changepoints
 
-def test():
+def test(data_input='random'):
     # First, we will specify the prior.  We will then generate some fake data
     # from the prior specification.  We will then perform inference. Then
     # we'll plot some things.
 
-    N = 1000 # how many data points to generate?
     hazard_func = lambda r: constant_hazard(r, _lambda=200)
 
-    # generate test data
-    x, changepoints = generate_test_data(N, hazard_func)
+    if data_input == 'random':
+        # generate test data
+        N = 1000 # how many data points to generate?
+        x, changepoints = generate_test_data(N, hazard_func)
+    elif data_input == 'ones':
+        x = np.ones(N)
+        changepoints = []
+    elif data_input == 'signature':
+        from pda.channel import Channel
+        from os import path
+        DATA_DIR = '/data/mine/domesticPowerData/BellendenRd/wattsUp'
+        #SIG_DATA_FILENAME = 'breadmaker1.csv'
+        SIG_DATA_FILENAME = 'washingmachine1.csv'
+        chan = Channel()
+        chan.load_wattsup(path.join(DATA_DIR, SIG_DATA_FILENAME))
+        x = chan.series.values[142:1647]
+        N = x.size
 
     # plot
     fig = plt.figure()
-    ax = fig.add_subplot(1,1,1)
+    ax = fig.add_subplot(2,1,1)
     ax.plot(x)
     ylim = ax.get_ylim()
     for cp in changepoints:
         ax.plot([cp, cp], ylim, color='k')
-    plt.draw()
 
-    
+    # do inference
+    beliefs, maxes = inference(x, hazard_func)
+
+    # plot beliefs
+    beliefs = beliefs.astype(np.float32)
+    ax2 = fig.add_subplot(2,1,2, sharex=ax)
+    ax2.imshow(-np.log(beliefs), interpolation='none', aspect='auto', 
+               origin='lower', cmap=plt.cm.Blues)
+    ax2.plot(maxes, color='r')
+    ax2.set_xlim([0, N])
+    ax2.set_ylim([0, ax2.get_ylim()[1]])
+    plt.draw()
+    return beliefs, maxes
+
+test()
