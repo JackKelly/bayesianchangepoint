@@ -1,5 +1,5 @@
 """
- Implementation of:
+ An implementation of:
  @TECHREPORT{ adams-mackay-2007,
     AUTHOR = {Ryan Prescott Adams and David J.C. MacKay},
     TITLE  = "{B}ayesian Online Changepoint Detection",
@@ -11,6 +11,9 @@
 """
 from __future__ import print_function, division
 import numpy as np
+from numpy.random import gamma, randn, rand
+from scipy.special import gammaln
+import matplotlib.pyplot as plt
 
 
 def constant_hazard(r, _lambda):
@@ -25,17 +28,46 @@ def constant_hazard(r, _lambda):
         memoryless and the hazard function is constant at H(tau) = 1/lambda"
 
     Args:
-      * r (np.ndarray)
+      * r (np.ndarray or scalar)
       * _lambda (float)
 
-    Returns: probability of a changepoint
+    Returns:
+      * p (square np.ndarray shape (r.shape[0], r.shape[0]): 
+        probability of a changepoint
     """
-    return (1 / _lambda) * np.ones(r.size)
+    if isinstance(r, np.ndarray):
+        shape = r.shape
+    else:
+        shape = 1
+
+    probability = np.ones(shape) / _lambda
+    return probability
 
 
-def bcp(x, hazard_func, mu0=0, kappa0=1, alpha0=1, beta0=1):
+def studentpdf(x, mu, var, nu):
+    """
+    Returns the pdf(x).
+
+    scipy.stats.distributions.t.pdf(x=x-mu, df=nu) comes close
+    to replicating studentpdf but Kevin Murphy's studentpdf
+    function includes a 'var' variable which scipy's version does not.
+    """
+    # Using a mixture of code from studentpdf.m and
+    # scipy.stats.distributions.t_gen._pdf()
+    r = np.asarray(nu*1.0)
+    c = np.exp(gammaln((r+1)/2) - gammaln(r/2)) 
+    c /= np.sqrt(r * np.pi * var) * (1+((x-mu)**2)/(r*var))**((r+1)/2)
+    return c 
+
+
+def row_to_column_vector(row_vector):
+    return np.matrix(row_vector).transpose()
+
+
+def inference(x, hazard_func, mu0=0, kappa0=1, alpha0=1, beta0=1):
     """
     Args:
+      * x (np.ndarray): data
       * hazard_func (function): 
         This is a handle to a function that takes one argument, the number of 
         time increments since the last changepoint, and returns a value in the
@@ -52,15 +84,134 @@ def bcp(x, hazard_func, mu0=0, kappa0=1, alpha0=1, beta0=1):
           - Chris Bishop's "Pattern Recognition and Machine Learning" Chapter 2
           - Also, Kevin Murphy's lecture notes.
     """
-    pass
+    # Now we have some data in X and it's time to perform inference.
+    # First, setup the matrix that will hold our beliefs about the current
+    # run lengths.  We'll initialize it all to zero at first.  Obviously
+    # we're assuming here that we know how long we're going to do the
+    # inference.  You can imagine other data structures that don't make that
+    # assumption (e.g. linked lists).  We're doing this because it's easy.
+    r = np.zeros([x.size+1, x.size])
 
+    # At time t=0, we actually have complete knowledge about the run
+    # length.  It is definitely zero.  See the paper for other possible
+    # boundary conditions.
+    r[0,0] = 1.0
+
+    # Track the current set of parameters.  These start out at the prior and
+    # accumulate data as we proceed.
+    muT    = mu0
+    kappaT = kappa0
+    alphaT = alpha0
+    betaT  = beta0
+
+    # Keep track of the maximums.
+    maxes  = np.zeros([x.size+1, x.size+1])
+
+    # Loop over the data like we're seeing it all for the first time.
+    for t in range(x.size):
+
+        # Evaluate the predictive distribution for the new datum under each of
+        # the parameters.  This is the standard thing from Bayesian inference.
+        predprobs = studentpdf(x[t], muT,
+                               betaT*(kappaT+1)/(alphaT*kappaT),
+                               2 * alphaT)
+
+        # Evaluate the hazard function for this interval.
+        h = hazard_func(row_to_column_vector(np.arange(t)))
+
+        # Evaluate the growth probabilities - shift the probabilities down and to
+        # the right, scaled by the hazard function and the predictive
+        # probabilities.
+        r[1:t+1,t+1] = r[0:t,t] * predprobs * (1-h)
+
+        # Evaluate the probability that there *was* a changepoint and we're
+        # accumulating the mass back down at r = 0.
+        r[0,t+1] = (r[0:t,t] * predprobs * h).sum()
+
+        # Renormalize the run length probabilities for improved numerical
+        # stability.
+        r[:,t+1] = r[:,t+1] / r[:,t+1].sum()
+
+        # Update the parameter sets for each possible run length.
+        # TODO: continue porting from here...
+        muT0    = [ mu0    ; (kappaT.*muT + X(t)) ./ (kappaT+1) ]
+        kappaT0 = [ kappa0 ; kappaT + 1 ]
+        alphaT0 = [ alpha0 ; alphaT + 0.5 ]
+        betaT0  = [ beta0  ; kappaT + (kappaT .*(X(t)-muT).^2)./(2*(kappaT+1)) ]
+        muT     = muT0
+        kappaT  = kappaT0
+        alphaT  = alphaT0
+        betaT   = betaT0
+
+        # Store the maximum, to plot later.
+        maxes(t) = find(R(:,t)==max(R(:,t)))
+
+
+def generate_test_data(n, hazard_func, mu0=0, kappa0=1, alpha0=1, beta0=1):
+    """
+    Args:
+      * n (int): number of data elements to return
+      * hazard_func, mu0, kappa0, alpha0, beta0: see doc for inference()
+
+    Returns: x, changepoints
+      * x (np.ndarray of length n): data
+      * changepoints (list of ints): indices of changepoints
+    """
+    x = np.zeros(n) # this will hold the data
+    changepoints = [0] # Store the times of changepoints.  It's useful to see them.
+
+    def generate_params():
+        # Generate the parameters of the Gaussian from the prior.
+        curr_ivar = gamma(alpha0) * beta0
+        curr_mean = (((kappa0 * curr_ivar) ** -0.5) * randn()) + mu0
+        return curr_ivar, curr_mean
+
+    curr_ivar, curr_mean = generate_params()
+    curr_run = 0 # Initial run length is zero
+
+    # Now, loop forward in time and generate data.
+    for t in range(n):
+
+        # Get the probability of a new changepoint.
+        p = hazard_func(curr_run)
+
+        # Randomly generate a changepoint, perhaps.
+        if rand() < p:
+            # Generate new Gaussian parameters from the prior.
+            curr_ivar, curr_mean = generate_params()
+
+            # The run length drops back to zero.
+            curr_run = 0
+    
+            # Add this changepoint to the end of the list.
+            changepoints.append(t)
+        else:
+            # Increment the run length if there was no changepoint.
+            curr_run += 1
+
+        # Draw data from the current parameters.
+        x[t] = (curr_ivar ** -0.5) * randn() + curr_mean
+
+    return x, changepoints
 
 def test():
-    # First, we wil specify the prior.  We will then generate some fake data
+    # First, we will specify the prior.  We will then generate some fake data
     # from the prior specification.  We will then perform inference. Then
     # we'll plot some things.
 
     N = 1000 # how many data points to generate?
     hazard_func = lambda r: constant_hazard(r, _lambda=200)
-    x = np.zeros(N) # this will hold the data
-    cp = [0];
+
+    # generate test data
+    x, changepoints = generate_test_data(N, hazard_func)
+
+    # plot
+    fig = plt.figure()
+    ax = fig.add_subplot(1,1,1)
+    ax.plot(x)
+    ylim = ax.get_ylim()
+    for cp in changepoints:
+        ax.plot([cp, cp], ylim, color='k')
+    plt.draw()
+
+    
