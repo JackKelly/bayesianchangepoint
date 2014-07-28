@@ -23,7 +23,7 @@ def constant_hazard(r, _lambda):
 
     To quote the paper (section 2.1: "THE CHANGEPOINT PRIOR"):
 
-        "In the special case where P_{gap}(g) is a discrete exponential 
+        "In the special case where P_{gap}(g) is a discrete exponential
         (geometric) distribution with timescale lambda, the process is
         memoryless and the hazard function is constant at H(tau) = 1/lambda"
 
@@ -54,9 +54,9 @@ def studentpdf(x, mu, var, nu):
     # Using a mixture of code from studentpdf.m and
     # scipy.stats.distributions.t_gen._pdf()
     r = np.asarray(nu*1.0)
-    c = np.exp(gammaln((r+1)/2) - gammaln(r/2)) 
+    c = np.exp(gammaln((r+1)/2) - gammaln(r/2))
     c /= np.sqrt(r * np.pi * var) * (1+((x-mu)**2)/(r*var))**((r+1)/2)
-    return c 
+    return c
 
 
 def row_to_column_vector(row_vector):
@@ -67,17 +67,17 @@ def inference(x, hazard_func, mu0=0, kappa0=1, alpha0=1, beta0=1):
     """
     Args:
       * x (np.ndarray): data
-      * hazard_func (function): 
-        This is a handle to a function that takes one argument, the number of 
+      * hazard_func (function):
+        This is a handle to a function that takes one argument, the number of
         time increments since the last changepoint, and returns a value in the
-        interval [0,1] that is the probability of a changepoint.  
+        interval [0,1] that is the probability of a changepoint.
         e.g. hazard_func=lambda beliefs: constant_hazard(beliefs, 200)
 
       * mu0, kappa0, alpha0, beta0 (float): specify normal-inverse-gamma prior.
         This data is Gaussian with unknown mean and variance.  We are going to
         use the standard conjugate prior of a normal-inverse-gamma.  Note that
         one cannot use non-informative priors for changepoint detection in
-        this construction.  The normal-inverse-gamma yields a closed-form 
+        this construction.  The normal-inverse-gamma yields a closed-form
         predictive distribution, which makes it easy to use in this context.
         There are lots of references out there for doing this kind of inference:
           - Chris Bishop's "Pattern Recognition and Machine Learning" Chapter 2
@@ -143,7 +143,7 @@ def inference(x, hazard_func, mu0=0, kappa0=1, alpha0=1, beta0=1):
         muT0    = np.concatenate([mu0   , (kappaT*muT + x[t]) / (kappaT+1) ])
         kappaT0 = np.concatenate([kappa0, kappaT + 1 ])
         alphaT0 = np.concatenate([alpha0, alphaT + 0.5 ])
-        betaT0  = np.concatenate([beta0 , kappaT + 
+        betaT0  = np.concatenate([beta0 , kappaT +
                                           (kappaT*(x[t]-muT)**2)/(2*(kappaT+1))])
         muT     = muT0
         kappaT  = kappaT0
@@ -190,7 +190,7 @@ def generate_test_data(n, hazard_func, mu0=0, kappa0=1, alpha0=1, beta0=1):
 
             # The run length drops back to zero.
             curr_run = 0
-    
+
             # Add this changepoint to the end of the list.
             changepoints.append(t)
         else:
@@ -211,7 +211,7 @@ def test(data_input='random'):
 
     if data_input == 'random':
         # generate test data
-        N = 1000 # how many data points to generate?
+        N = 100 # how many data points to generate?
         x, changepoints = generate_test_data(N, hazard_func)
     elif data_input == 'ones':
         x = np.ones(N)
@@ -240,8 +240,9 @@ def test(data_input='random'):
 
     # plot beliefs
     beliefs = beliefs.astype(np.float32)
+    #print(beliefs)
     ax2 = fig.add_subplot(2,1,2, sharex=ax)
-    ax2.imshow(-np.log(beliefs), interpolation='none', aspect='auto', 
+    ax2.imshow(-np.log(beliefs), interpolation='none', aspect='auto',
                origin='lower', cmap=plt.cm.Blues)
     ax2.plot(maxes, color='r')
     ax2.set_xlim([0, N])
@@ -249,4 +250,4 @@ def test(data_input='random'):
     plt.draw()
     return beliefs, maxes
 
-test()
+#test()
